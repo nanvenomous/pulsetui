@@ -44,6 +44,7 @@ type model struct {
 
 type tickMsg time.Time
 type updateDataMsg struct{}
+type updatePeaksMsg struct{}
 
 func tickEvery() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
@@ -51,9 +52,16 @@ func tickEvery() tea.Cmd {
 	})
 }
 
+func peakUpdateEvery() tea.Cmd {
+	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+		return updatePeaksMsg{}
+	})
+}
+
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		tickEvery(),
+		peakUpdateEvery(),
 		func() tea.Msg { return updateDataMsg{} },
 	)
 }
@@ -75,6 +83,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update data from PulseAudio
 		m.updateData()
 		return m, nil
+
+	case updatePeaksMsg:
+		// Update peak levels for input devices
+		m.updatePeaks()
+		return m, peakUpdateEvery()
 
 	case tea.KeyMsg:
 		if m.searchMode {
@@ -110,9 +123,44 @@ func (m *model) updateData() {
 		if err != nil {
 			m.err = err
 		}
+		// Start peak monitors for input devices
+		m.startPeakMonitors()
 	}
 
 	m.lastUpdate = time.Now()
+}
+
+func (m *model) updatePeaks() {
+	// Only update peaks when on Input Devices tab
+	if m.currentTab != TabInputDevices {
+		return
+	}
+
+	// Update peak levels for all sources
+	for i := range m.sources {
+		if m.sources[i].Available {
+			m.sources[i].PeakLevel = m.pulseClient.GetPeakLevel(m.sources[i].Index)
+		}
+	}
+}
+
+func (m *model) startPeakMonitors() {
+	// Only monitor input devices when on that tab
+	if m.currentTab != TabInputDevices {
+		return
+	}
+
+	for _, source := range m.sources {
+		if source.Available {
+			// Start monitoring (it will skip if already running)
+			m.pulseClient.StartPeakMonitor(source.Index, source.Name)
+		}
+	}
+}
+
+func (m *model) stopPeakMonitors() {
+	// Stop all peak monitors
+	m.pulseClient.StopAllPeakMonitors()
 }
 
 func (m model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -143,15 +191,24 @@ func (m model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
+		m.stopPeakMonitors()
 		return m, tea.Quit
 
 	case "tab", "right":
+		// Stop peak monitors when leaving Input Devices tab
+		if m.currentTab == TabInputDevices {
+			m.stopPeakMonitors()
+		}
 		m.currentTab = (m.currentTab + 1) % 4
 		m.selectedIndex = 0
 		m.searchQuery = ""
 		return m, func() tea.Msg { return updateDataMsg{} }
 
 	case "shift+tab", "left":
+		// Stop peak monitors when leaving Input Devices tab
+		if m.currentTab == TabInputDevices {
+			m.stopPeakMonitors()
+		}
 		m.currentTab = (m.currentTab + 3) % 4
 		m.selectedIndex = 0
 		m.searchQuery = ""
@@ -492,6 +549,12 @@ func (m model) renderDevices(devices []Device) string {
 		line.WriteString("\n  ")
 		line.WriteString(renderVolumeBar(device.Volume))
 
+		// Add peak meter for input devices (sources)
+		if m.currentTab == TabInputDevices && device.Available {
+			line.WriteString("  ")
+			line.WriteString(renderPeakMeter(device.PeakLevel))
+		}
+
 		// Apply styling
 		style := lipgloss.NewStyle().Padding(0, 1)
 		if !device.Available {
@@ -579,6 +642,33 @@ func renderVolumeBar(volume int) string {
 	}
 
 	return fmt.Sprintf("%s %3d%%", style.Render(bar), volume)
+}
+
+func renderPeakMeter(peakLevel float64) string {
+	meterWidth := 10
+	filled := int(peakLevel * float64(meterWidth))
+	if filled > meterWidth {
+		filled = meterWidth
+	}
+	if filled < 0 {
+		filled = 0
+	}
+
+	meter := strings.Repeat("=", filled) + strings.Repeat(" ", meterWidth-filled)
+
+	// Color based on peak level
+	style := lipgloss.NewStyle()
+	if peakLevel > 0.8 {
+		style = style.Foreground(lipgloss.Color("196")) // Red - clipping warning
+	} else if peakLevel > 0.5 {
+		style = style.Foreground(lipgloss.Color("214")) // Orange - good level
+	} else if peakLevel > 0.1 {
+		style = style.Foreground(lipgloss.Color("46")) // Green - active
+	} else {
+		style = style.Foreground(lipgloss.Color("240")) // Gray - quiet
+	}
+
+	return style.Render(fmt.Sprintf("[%s]", meter))
 }
 
 func (m model) renderSearchBar() string {

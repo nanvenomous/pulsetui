@@ -1,11 +1,16 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"io"
+	"math"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Device represents an audio device (sink or source)
@@ -16,8 +21,9 @@ type Device struct {
 	Volume      int // 0 to 100
 	Muted       bool
 	IsDefault   bool
-	Available   bool   // true if device is available/usable
-	State       string // RUNNING, SUSPENDED, IDLE, etc.
+	Available   bool    // true if device is available/usable
+	State       string  // RUNNING, SUSPENDED, IDLE, etc.
+	PeakLevel   float64 // 0.0 to 1.0, real-time audio level
 }
 
 // Stream represents an audio stream (sink input or source output)
@@ -30,8 +36,22 @@ type Stream struct {
 	DeviceIndex int
 }
 
+// PeakMonitor monitors the peak audio level for a source
+type PeakMonitor struct {
+	sourceIndex int
+	sourceName  string
+	cmd         *exec.Cmd
+	peakLevel   float64
+	running     bool
+	mu          sync.Mutex
+	decay       float64 // Decay rate for smooth visual effect
+}
+
 // PulseClient wraps PulseAudio operations using pactl
-type PulseClient struct{}
+type PulseClient struct {
+	peakMonitors map[int]*PeakMonitor
+	monitorMu    sync.Mutex
+}
 
 // NewPulseClient creates a new PulseAudio client
 func NewPulseClient() (*PulseClient, error) {
@@ -39,11 +59,169 @@ func NewPulseClient() (*PulseClient, error) {
 	if _, err := exec.LookPath("pactl"); err != nil {
 		return nil, fmt.Errorf("pactl not found: %w", err)
 	}
-	return &PulseClient{}, nil
+	// Test if parec is available
+	if _, err := exec.LookPath("parec"); err != nil {
+		return nil, fmt.Errorf("parec not found: %w", err)
+	}
+	return &PulseClient{
+		peakMonitors: make(map[int]*PeakMonitor),
+	}, nil
 }
 
-// Close closes the PulseAudio connection (no-op for pactl)
-func (pc *PulseClient) Close() {}
+// Close closes the PulseAudio connection and stops all monitors
+func (pc *PulseClient) Close() {
+	pc.StopAllPeakMonitors()
+}
+
+// StartPeakMonitor starts monitoring the peak level for a source
+func (pc *PulseClient) StartPeakMonitor(sourceIndex int, sourceName string) error {
+	pc.monitorMu.Lock()
+	defer pc.monitorMu.Unlock()
+
+	// Check if already monitoring
+	if monitor, exists := pc.peakMonitors[sourceIndex]; exists {
+		if monitor.running {
+			return nil // Already running
+		}
+	}
+
+	monitor := &PeakMonitor{
+		sourceIndex: sourceIndex,
+		sourceName:  sourceName,
+		running:     true,
+		decay:       0.95, // Smooth decay
+	}
+
+	// For input sources, use the source name directly (no .monitor suffix needed)
+	// Input sources (microphones) are already capturable sources
+	monitorName := sourceName
+
+	// Start parec with optimized settings for peak detection
+	monitor.cmd = exec.Command("parec",
+		"-d", monitorName,
+		"--format=s16le",    // 16-bit signed little-endian
+		"--rate=8000",       // Low sample rate for efficiency
+		"--channels=1",      // Mono
+		"--latency-msec=50") // 50ms latency for responsiveness
+
+	stdout, err := monitor.cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	if err := monitor.cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start parec: %w", err)
+	}
+
+	// Start reading samples in a goroutine
+	go monitor.readSamples(stdout)
+
+	pc.peakMonitors[sourceIndex] = monitor
+	return nil
+}
+
+// StopPeakMonitor stops monitoring a specific source
+func (pc *PulseClient) StopPeakMonitor(sourceIndex int) {
+	pc.monitorMu.Lock()
+	defer pc.monitorMu.Unlock()
+
+	if monitor, exists := pc.peakMonitors[sourceIndex]; exists {
+		monitor.Stop()
+		delete(pc.peakMonitors, sourceIndex)
+	}
+}
+
+// StopAllPeakMonitors stops all peak monitors
+func (pc *PulseClient) StopAllPeakMonitors() {
+	pc.monitorMu.Lock()
+	defer pc.monitorMu.Unlock()
+
+	for _, monitor := range pc.peakMonitors {
+		monitor.Stop()
+	}
+	pc.peakMonitors = make(map[int]*PeakMonitor)
+}
+
+// GetPeakLevel returns the current peak level for a source
+func (pc *PulseClient) GetPeakLevel(sourceIndex int) float64 {
+	pc.monitorMu.Lock()
+	defer pc.monitorMu.Unlock()
+
+	if monitor, exists := pc.peakMonitors[sourceIndex]; exists {
+		return monitor.GetPeakLevel()
+	}
+	return 0.0
+}
+
+// Stop stops the peak monitor
+func (pm *PeakMonitor) Stop() {
+	pm.mu.Lock()
+	pm.running = false
+	pm.mu.Unlock()
+
+	if pm.cmd != nil && pm.cmd.Process != nil {
+		pm.cmd.Process.Kill()
+		pm.cmd.Wait()
+	}
+}
+
+// GetPeakLevel returns the current peak level
+func (pm *PeakMonitor) GetPeakLevel() float64 {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	return pm.peakLevel
+}
+
+// readSamples reads audio samples and calculates peak levels
+func (pm *PeakMonitor) readSamples(r io.Reader) {
+	// Buffer size for 50ms of audio at 8000 Hz, 16-bit mono
+	// 8000 samples/sec * 0.05 sec * 2 bytes/sample = 800 bytes
+	buf := make([]byte, 800)
+
+	for {
+		pm.mu.Lock()
+		running := pm.running
+		pm.mu.Unlock()
+
+		if !running {
+			break
+		}
+
+		n, err := io.ReadFull(r, buf)
+		if err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				// Only log non-EOF errors if needed
+			}
+			break
+		}
+
+		// Calculate peak amplitude from samples
+		var peak float64
+		for i := 0; i < n-1; i += 2 {
+			// Read 16-bit signed sample (little-endian)
+			sample := int16(binary.LittleEndian.Uint16(buf[i : i+2]))
+
+			// Convert to absolute value and normalize to 0.0-1.0
+			absValue := math.Abs(float64(sample)) / 32768.0
+			if absValue > peak {
+				peak = absValue
+			}
+		}
+
+		// Update peak level with decay
+		pm.mu.Lock()
+		// If new peak is higher, use it; otherwise apply decay
+		if peak > pm.peakLevel {
+			pm.peakLevel = peak
+		} else {
+			pm.peakLevel *= pm.decay
+		}
+		pm.mu.Unlock()
+
+		// Small sleep to avoid spinning too fast
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 // parseDeviceList parses pactl list output for sinks or sources
 func parseDeviceList(output string, deviceType string) []Device {

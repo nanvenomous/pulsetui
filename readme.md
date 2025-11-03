@@ -17,6 +17,10 @@ A simple and clean TUI (Terminal User Interface) application for managing PulseA
   - `✓` Default device (currently in use)
   - `●` Available device
   - `⊗` Unavailable device (shown only when "Show All" is enabled)
+- **Real-time peak level monitoring**: Input devices show live audio level meters
+  - Tap your microphone to see which device it is!
+  - Color-coded: gray (quiet), green (active), orange (good level), red (clipping)
+  - Low CPU usage (~1-2% per monitored device)
 - **Device search**: Quick search with `/` key
 - **Volume control**: Visual volume bars with +/- keys (color-coded: green/orange/red)
 - **Default device selection**: Set default devices with Enter/d
@@ -56,6 +60,21 @@ go build
 
 ## Requirements
 
-- PulseAudio with `pactl` command
+- PulseAudio with `pactl` and `parec` commands
 - Linux system with PulseAudio running
+
+## How Peak Level Monitoring Works
+
+The peak level meter on the Input Devices tab shows real-time audio levels for each microphone/input device. This makes it easy to identify which physical device is which:
+
+1. Navigate to the "Input Devices" tab
+2. Tap or make noise near your microphone
+3. Watch the peak meter `[=====     ]` light up in real-time
+4. The meter updates 20 times per second for smooth visualization
+
+**Technical details:**
+- Uses PulseAudio's monitor sources to capture audio levels
+- Optimized with 8kHz sample rate (sufficient for level detection)
+- Peak meters only active when viewing Input Devices tab (no overhead otherwise)
+- Smooth decay for better visual feedback
 
