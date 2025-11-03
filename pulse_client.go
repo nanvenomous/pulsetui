@@ -24,6 +24,7 @@ type Device struct {
 	Available   bool    // true if device is available/usable
 	State       string  // RUNNING, SUSPENDED, IDLE, etc.
 	PeakLevel   float64 // 0.0 to 1.0, real-time audio level
+	IsMonitor   bool    // true if this is a monitor source (e.g., "Monitor of...")
 }
 
 // Stream represents an audio stream (sink input or source output)
@@ -259,6 +260,11 @@ func parseDeviceList(output string, deviceType string) []Device {
 		// Parse description
 		if descMatch := regexp.MustCompile(`(?m)^\s*Description: (.+)$`).FindStringSubmatch(section); len(descMatch) > 1 {
 			device.Description = strings.TrimSpace(descMatch[1])
+		}
+
+		// Check if this is a monitor source
+		if strings.HasPrefix(device.Description, "Monitor of ") {
+			device.IsMonitor = true
 		}
 
 		// Parse volume

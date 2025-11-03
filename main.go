@@ -327,6 +327,10 @@ func (m *model) getFilteredItems() interface{} {
 			if !m.showAllDevices && !d.Available {
 				continue
 			}
+			// Filter monitor sources unless showAllDevices is true
+			if !m.showAllDevices && d.IsMonitor {
+				continue
+			}
 			// Filter by search query
 			if query != "" {
 				if !strings.Contains(strings.ToLower(d.Description), query) &&
@@ -687,8 +691,12 @@ func (m model) renderStatusBar() string {
 	status := fmt.Sprintf("Last update: %s", m.lastUpdate.Format("15:04:05"))
 
 	// Add indicator for "Show All Devices" mode
-	if m.showAllDevices && (m.currentTab == TabOutputDevices || m.currentTab == TabInputDevices) {
-		status += "  [Showing All Devices]"
+	if m.showAllDevices {
+		if m.currentTab == TabInputDevices {
+			status += "  [Showing All + Monitors]"
+		} else if m.currentTab == TabOutputDevices {
+			status += "  [Showing All Devices]"
+		}
 	}
 
 	return lipgloss.NewStyle().

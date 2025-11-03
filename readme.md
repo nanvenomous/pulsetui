@@ -12,7 +12,8 @@ A simple and clean TUI (Terminal User Interface) application for managing PulseA
   - Input Devices: Audio input devices (microphones)
 - **Smart filtering**: By default, only shows available/usable devices
   - Unavailable devices (e.g., unplugged HDMI) are hidden
-  - Press `a` to toggle showing all devices
+  - Monitor sources (e.g., "Monitor of Speaker") are hidden on Input Devices tab
+  - Press `a` to toggle showing all devices and monitors
 - **Device availability indicators**:
   - `✓` Default device (currently in use)
   - `●` Available device
