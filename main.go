@@ -28,6 +28,7 @@ type model struct {
 	pulseClient    *PulseClient
 	currentTab     Tab
 	selectedIndex  int
+	scrollOffset   int  // Vertical scroll position for viewport
 	searchQuery    string
 	searchMode     bool
 	showAllDevices bool // Toggle to show unavailable devices
@@ -208,6 +209,7 @@ func (m model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.currentTab = (m.currentTab + 1) % 5
 		m.selectedIndex = 0
+		m.scrollOffset = 0
 		m.searchQuery = ""
 		return m, func() tea.Msg { return updateDataMsg{} }
 
@@ -218,12 +220,14 @@ func (m model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.currentTab = (m.currentTab + 4) % 5
 		m.selectedIndex = 0
+		m.scrollOffset = 0
 		m.searchQuery = ""
 		return m, func() tea.Msg { return updateDataMsg{} }
 
 	case "up", "k":
 		if m.selectedIndex > 0 {
 			m.selectedIndex--
+			m.adjustScroll()
 		}
 		return m, nil
 
@@ -231,7 +235,45 @@ func (m model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		maxIndex := m.getMaxIndex()
 		if m.selectedIndex < maxIndex-1 {
 			m.selectedIndex++
+			m.adjustScroll()
 		}
+		return m, nil
+
+	case "pgdown":
+		// Jump down by 10 items or to end
+		maxIndex := m.getMaxIndex()
+		m.selectedIndex += 10
+		if m.selectedIndex >= maxIndex {
+			m.selectedIndex = maxIndex - 1
+		}
+		if m.selectedIndex < 0 {
+			m.selectedIndex = 0
+		}
+		m.adjustScroll()
+		return m, nil
+
+	case "pgup":
+		// Jump up by 10 items or to start
+		m.selectedIndex -= 10
+		if m.selectedIndex < 0 {
+			m.selectedIndex = 0
+		}
+		m.adjustScroll()
+		return m, nil
+
+	case "home", "g":
+		// Jump to first item
+		m.selectedIndex = 0
+		m.adjustScroll()
+		return m, nil
+
+	case "end", "G":
+		// Jump to last item
+		maxIndex := m.getMaxIndex()
+		if maxIndex > 0 {
+			m.selectedIndex = maxIndex - 1
+		}
+		m.adjustScroll()
 		return m, nil
 
 	case "/":
@@ -241,6 +283,7 @@ func (m model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		m.showAllDevices = !m.showAllDevices
 		m.selectedIndex = 0 // Reset selection when toggling
+		m.scrollOffset = 0
 		return m, nil
 
 	case "=", "+":
@@ -377,6 +420,77 @@ func (m *model) getFilteredItems() interface{} {
 	return nil
 }
 
+// adjustScroll adjusts the scroll offset to keep the selected item visible
+func (m *model) adjustScroll() {
+	// Calculate available height for content
+	// Account for: tabs (3 lines), status bar (2 lines), help (2 lines), search bar if active (2 lines)
+	headerHeight := 3
+	footerHeight := 4
+	if m.searchMode {
+		footerHeight += 2
+	}
+	
+	availableHeight := m.height - headerHeight - footerHeight
+	if availableHeight < 1 {
+		availableHeight = 1
+	}
+
+	// Get the visual line for the selected index
+	visualLine := m.getVisualLineForIndex(m.selectedIndex)
+	
+	// Scroll down if selected item is below visible area
+	if visualLine >= m.scrollOffset+availableHeight {
+		m.scrollOffset = visualLine - availableHeight + 1
+	}
+	
+	// Scroll up if selected item is above visible area
+	if visualLine < m.scrollOffset {
+		m.scrollOffset = visualLine
+	}
+	
+	// Ensure scroll offset doesn't go negative
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
+}
+
+// getVisualLineForIndex returns which visual line an item index corresponds to
+// This accounts for multi-line items (devices/streams have 2 lines each, cards have header + profiles)
+func (m *model) getVisualLineForIndex(index int) int {
+	items := m.getFilteredItems()
+	
+	switch m.currentTab {
+	case TabPlayback, TabRecording:
+		// Each stream takes 2 lines (name + volume bar)
+		return index * 2
+		
+	case TabOutputDevices, TabInputDevices:
+		// Each device takes 2-3 lines (description + volume/peak meter)
+		return index * 3
+		
+	case TabConfiguration:
+		// For cards: count lines including card headers
+		cards := items.([]Card)
+		currentIndex := 0
+		line := 0
+		
+		for _, card := range cards {
+			line++ // Card header
+			for range card.Profiles {
+				if currentIndex == index {
+					return line
+				}
+				line++ // Profile line
+				currentIndex++
+			}
+			line++ // Blank line after card
+		}
+		return line
+	}
+	
+	return index
+}
+
 func (m *model) adjustVolume(delta int) {
 	items := m.getFilteredItems()
 
@@ -505,8 +619,10 @@ func (m model) View() string {
 	b.WriteString(m.renderTabs())
 	b.WriteString("\n\n")
 
-	// Render content
-	b.WriteString(m.renderContent())
+	// Render content with scrolling
+	content := m.renderContent()
+	scrolledContent := m.applyScrolling(content)
+	b.WriteString(scrolledContent)
 
 	// Render search bar
 	if m.searchMode {
@@ -523,6 +639,38 @@ func (m model) View() string {
 	b.WriteString(m.renderHelp())
 
 	return b.String()
+}
+
+// applyScrolling applies vertical scrolling to content based on scrollOffset
+func (m model) applyScrolling(content string) string {
+	lines := strings.Split(content, "\n")
+	
+	// Calculate available height for content
+	headerHeight := 3
+	footerHeight := 4
+	if m.searchMode {
+		footerHeight += 2
+	}
+	
+	availableHeight := m.height - headerHeight - footerHeight
+	if availableHeight < 1 {
+		availableHeight = 1
+	}
+	
+	// Apply scrolling
+	startLine := m.scrollOffset
+	endLine := m.scrollOffset + availableHeight
+	
+	if startLine >= len(lines) {
+		return ""
+	}
+	
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+	
+	visibleLines := lines[startLine:endLine]
+	return strings.Join(visibleLines, "\n")
 }
 
 func (m model) renderTabs() string {
@@ -839,17 +987,17 @@ func (m model) renderHelp() string {
 		Foreground(lipgloss.Color("240")).
 		Padding(0, 1)
 
-	help := "↑/↓: Navigate  Tab: Switch  /: Search"
+	help := "↑↓/jk: Navigate  PgUp/PgDn: Jump  g/G: Top/Bottom  Tab: Switch  /: Search"
 
 	if m.currentTab == TabPlayback || m.currentTab == TabRecording {
-		help += "  +/-: Volume  m: Mute"
+		help += "  +/-: Volume"
 	} else if m.currentTab == TabOutputDevices || m.currentTab == TabInputDevices {
-		help += "  +/-: Volume  m: Mute  d/Enter: Set Default  a: Toggle All"
+		help += "  +/-: Volume  d: Default  a: All"
 	} else if m.currentTab == TabConfiguration {
-		help += "  Enter/d: Select Profile"
+		help += "  Enter: Select"
 	}
 
-	help += "  r: Refresh  q: Quit"
+	help += "  q: Quit"
 
 	return helpStyle.Render(help)
 }

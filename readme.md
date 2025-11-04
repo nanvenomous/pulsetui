@@ -54,8 +54,12 @@ go build
 ### Navigation
 - `Tab` / `→`: Next tab
 - `Shift+Tab` / `←`: Previous tab
-- `↑` / `k`: Move up
-- `↓` / `j`: Move down
+- `↑` / `k`: Move up one item
+- `↓` / `j`: Move down one item
+- `PgUp`: Jump up 10 items
+- `PgDn`: Jump down 10 items
+- `Home` / `g`: Jump to first item
+- `End` / `G`: Jump to last item
 - `/`: Search mode
 
 ### Volume & Device Control

@@ -84,7 +84,7 @@ go mod tidy      # Clean up dependencies
 The application follows the Model-Update-View pattern:
 
 1. **Model** (`model` struct): Application state
-   - Current tab, selection, search query
+   - Current tab, selection, search query, scroll offset
    - Cached audio data (devices, streams, cards)
    - PulseClient instance
 
@@ -119,6 +119,22 @@ The application follows the Model-Update-View pattern:
 5. `View()` re-renders with new state
 
 **Polling**: 1-second timer continuously refreshes current tab data
+
+### Viewport Scrolling
+
+**Problem**: Long lists overflow screen height, making top items inaccessible
+
+**Solution** (main.go:386-456):
+- Track `scrollOffset` for vertical scroll position
+- `adjustScroll()`: Automatically scrolls viewport to keep selected item visible
+- `applyScrolling()`: Clips rendered content to visible window
+- `getVisualLineForIndex()`: Maps item index to screen line (handles multi-line items)
+
+**Behavior**:
+- Viewport follows cursor automatically
+- Available height = terminal height - header (3) - footer (4-6)
+- Scroll offset resets on tab change or filter toggle
+- Supports Page Up/Down, Home/End for quick navigation
 
 ### Peak Level Monitoring (Input Devices Only)
 
@@ -282,10 +298,16 @@ Volume is 0-150% (PulseAudio allows over 100% for amplification). UI caps at 150
 Search is case-insensitive and matches both `Name` and `Description` fields. For devices, also respects `showAllDevices` toggle. For cards, matches card name or description.
 
 ### 7. Index-Based Selection
-Selection index refers to *filtered* items, not full list. Reset `selectedIndex` when toggling filters or changing tabs. For Configuration tab, index spans all profiles across all visible cards.
+Selection index refers to *filtered* items, not full list. Reset `selectedIndex` and `scrollOffset` when toggling filters or changing tabs. For Configuration tab, index spans all profiles across all visible cards.
 
-### 8. Profile Changes Are Disruptive
+### 8. Viewport Scrolling
+Content is clipped to fit available screen height. The viewport automatically follows the cursor. When rendering multi-line items (devices have 2-3 lines, cards have headers + profiles), `getVisualLineForIndex()` must correctly map item index to screen line for proper scrolling.
+
+### 9. Profile Changes Are Disruptive
 Changing a card's profile can interrupt active audio streams. Devices (sinks/sources) are destroyed and recreated. Warn users when selecting "off" profile implicitly by showing unavailable status.
+
+### 10. Profile Name Parsing
+Profile names can contain colons (e.g., `output:mono-fallback+input:mono-fallback`). The regex must use `.+?` (non-greedy) instead of `[^:]+` to capture the full name. Bug fixed: Changed from `[^:]+` to `.+?` with proper delimiter detection.
 
 ## Testing Approach
 
