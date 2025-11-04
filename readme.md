@@ -5,11 +5,17 @@ A simple and clean TUI (Terminal User Interface) application for managing PulseA
 ## Features
 
 - **Clean interface**: Simplified design compared to pavucontrol for better visual clarity
-- **Tab navigation**: Four main tabs
+- **Tab navigation**: Five main tabs
   - Playback: Active audio streams playing
   - Recording: Active recording streams
   - Output Devices: Audio output devices (speakers, headphones)
   - Input Devices: Audio input devices (microphones)
+  - Configuration: Sound card profile management
+- **Profile configuration**: Switch between different audio profiles for each sound card
+  - Change between mono/stereo output modes
+  - Enable/disable input or output independently
+  - Turn off unused devices to save power
+  - Similar to pavucontrol's Configuration tab
 - **Smart filtering**: By default, only shows available/usable devices
   - Unavailable devices (e.g., unplugged HDMI) are hidden
   - Monitor sources (e.g., "Monitor of Speaker") are hidden on Input Devices tab
@@ -49,10 +55,10 @@ go build
 - `/`: Search mode
 
 ### Volume & Device Control
-- `+` / `=`: Increase volume (+5%)
-- `-` / `_`: Decrease volume (-5%)
-- `m`: Toggle mute (devices only)
-- `d` / `Enter`: Set as default (devices only)
+- `+` / `=`: Increase volume (+5%) (Playback, Recording, Devices tabs)
+- `-` / `_`: Decrease volume (-5%) (Playback, Recording, Devices tabs)
+- `m`: Toggle mute (Playback, Recording, Devices tabs)
+- `d` / `Enter`: Set as default (Output/Input Devices tabs) or Select profile (Configuration tab)
 
 ### View Options
 - `a`: Toggle show all devices (including unavailable)
@@ -78,4 +84,27 @@ The peak level meter on the Input Devices tab shows real-time audio levels for e
 - Optimized with 8kHz sample rate (sufficient for level detection)
 - Peak meters only active when viewing Input Devices tab (no overhead otherwise)
 - Smooth decay for better visual feedback
+
+## Configuration Tab
+
+The Configuration tab lets you switch between different profiles for each sound card, similar to pavucontrol's Configuration tab.
+
+**What are profiles?**
+- Profiles define how a sound card operates (mono vs stereo, input/output combinations)
+- Each profile creates different virtual audio devices
+- Examples: "Mono Output + Mono Input", "Stereo Output", "Digital Output (S/PDIF)", "Off"
+
+**Usage:**
+1. Navigate to Configuration tab
+2. Use ↑/↓ to select a profile
+3. Press Enter or `d` to activate the selected profile
+4. Active profile is marked with `●` in green
+5. Unavailable profiles are grayed out
+
+**Common use cases:**
+- Switch USB headset between headphones-only and full-duplex (with microphone)
+- Select digital vs analog output
+- Disable unused sound cards to save power
+- Switch between stereo and surround sound modes
+
 

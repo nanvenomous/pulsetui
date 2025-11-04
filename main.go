@@ -18,9 +18,10 @@ const (
 	TabRecording
 	TabOutputDevices
 	TabInputDevices
+	TabConfiguration
 )
 
-var tabNames = []string{"Playback", "Recording", "Output Devices", "Input Devices"}
+var tabNames = []string{"Playback", "Recording", "Output Devices", "Input Devices", "Configuration"}
 
 // Model represents the application state
 type model struct {
@@ -39,6 +40,7 @@ type model struct {
 	sources       []Device
 	sinkInputs    []Stream
 	sourceOutputs []Stream
+	cards         []Card
 	lastUpdate    time.Time
 }
 
@@ -125,6 +127,11 @@ func (m *model) updateData() {
 		}
 		// Start peak monitors for input devices
 		m.startPeakMonitors()
+	case TabConfiguration:
+		m.cards, err = m.pulseClient.ListCards()
+		if err != nil {
+			m.err = err
+		}
 	}
 
 	m.lastUpdate = time.Now()
@@ -199,7 +206,7 @@ func (m model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.currentTab == TabInputDevices {
 			m.stopPeakMonitors()
 		}
-		m.currentTab = (m.currentTab + 1) % 4
+		m.currentTab = (m.currentTab + 1) % 5
 		m.selectedIndex = 0
 		m.searchQuery = ""
 		return m, func() tea.Msg { return updateDataMsg{} }
@@ -209,7 +216,7 @@ func (m model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.currentTab == TabInputDevices {
 			m.stopPeakMonitors()
 		}
-		m.currentTab = (m.currentTab + 3) % 4
+		m.currentTab = (m.currentTab + 4) % 5
 		m.selectedIndex = 0
 		m.searchQuery = ""
 		return m, func() tea.Msg { return updateDataMsg{} }
@@ -249,7 +256,11 @@ func (m model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { return updateDataMsg{} }
 
 	case "d", "enter":
-		m.setAsDefault()
+		if m.currentTab == TabConfiguration {
+			m.setCardProfile()
+		} else {
+			m.setAsDefault()
+		}
 		return m, func() tea.Msg { return updateDataMsg{} }
 
 	case "r":
@@ -267,6 +278,13 @@ func (m *model) getMaxIndex() int {
 		return len(items)
 	case []Device:
 		return len(items)
+	case []Card:
+		// For cards, count total profiles across all cards
+		total := 0
+		for _, card := range items {
+			total += len(card.Profiles)
+		}
+		return total
 	default:
 		return 0
 	}
@@ -339,6 +357,19 @@ func (m *model) getFilteredItems() interface{} {
 				}
 			}
 			filtered = append(filtered, d)
+		}
+		return filtered
+
+	case TabConfiguration:
+		if query == "" {
+			return m.cards
+		}
+		filtered := []Card{}
+		for _, c := range m.cards {
+			if strings.Contains(strings.ToLower(c.Description), query) ||
+				strings.Contains(strings.ToLower(c.Name), query) {
+				filtered = append(filtered, c)
+			}
 		}
 		return filtered
 	}
@@ -444,6 +475,29 @@ func (m *model) setAsDefault() {
 	}
 }
 
+func (m *model) setCardProfile() {
+	items := m.getFilteredItems()
+	cards := items.([]Card)
+
+	// Find which card and profile the selectedIndex refers to
+	currentIndex := 0
+	for _, card := range cards {
+		for _, profile := range card.Profiles {
+			if currentIndex == m.selectedIndex {
+				// Found the selected profile
+				if profile.Available {
+					err := m.pulseClient.SetCardProfile(card.Index, profile.Name)
+					if err != nil {
+						m.err = fmt.Errorf("failed to set profile: %w", err)
+					}
+				}
+				return
+			}
+			currentIndex++
+		}
+	}
+}
+
 func (m model) View() string {
 	var b strings.Builder
 
@@ -507,6 +561,8 @@ func (m model) renderContent() string {
 		return m.renderDevices(items.([]Device))
 	case TabInputDevices:
 		return m.renderDevices(items.([]Device))
+	case TabConfiguration:
+		return m.renderCards(items.([]Card))
 	}
 
 	return ""
@@ -623,6 +679,80 @@ func (m model) renderStreams(streams []Stream) string {
 	return b.String()
 }
 
+func (m model) renderCards(cards []Card) string {
+	if len(cards) == 0 {
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Render("No sound cards found")
+	}
+
+	var b strings.Builder
+	currentIndex := 0
+
+	for _, card := range cards {
+		// Card header
+		cardHeader := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("15")).
+			Render(card.Description)
+
+		b.WriteString(cardHeader)
+		b.WriteString("\n")
+
+		// Render each profile
+		for _, profile := range card.Profiles {
+			isSelected := currentIndex == m.selectedIndex
+			isActive := profile.Name == card.ActiveProfile
+
+			// Build profile line
+			var line strings.Builder
+
+			// Active indicator
+			if isActive {
+				line.WriteString("● ")
+			} else {
+				line.WriteString("  ")
+			}
+
+			// Profile description
+			line.WriteString(profile.Description)
+
+			// Sink/Source counts
+			line.WriteString(fmt.Sprintf(" (%d out, %d in)", profile.SinkCount, profile.SourceCount))
+
+			// Unavailable indicator
+			if !profile.Available {
+				line.WriteString(" [UNAVAILABLE]")
+			}
+
+			// Apply styling
+			style := lipgloss.NewStyle().Padding(0, 1)
+			if !profile.Available {
+				// Grey out unavailable profiles
+				style = style.Foreground(lipgloss.Color("240"))
+			} else if isActive {
+				// Highlight active profile
+				style = style.Foreground(lipgloss.Color("46")) // Green
+			}
+
+			if isSelected {
+				style = style.
+					Background(lipgloss.Color("237")).
+					Bold(true)
+			}
+
+			b.WriteString(style.Render(line.String()))
+			b.WriteString("\n")
+
+			currentIndex++
+		}
+
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
 func renderVolumeBar(volume int) string {
 	barWidth := 30
 	filled := int(float64(volume) / 150.0 * float64(barWidth))
@@ -709,10 +839,14 @@ func (m model) renderHelp() string {
 		Foreground(lipgloss.Color("240")).
 		Padding(0, 1)
 
-	help := "↑/↓: Navigate  Tab: Switch  /: Search  +/-: Volume  m: Mute"
+	help := "↑/↓: Navigate  Tab: Switch  /: Search"
 
-	if m.currentTab == TabOutputDevices || m.currentTab == TabInputDevices {
-		help += "  d/Enter: Set Default  a: Toggle All"
+	if m.currentTab == TabPlayback || m.currentTab == TabRecording {
+		help += "  +/-: Volume  m: Mute"
+	} else if m.currentTab == TabOutputDevices || m.currentTab == TabInputDevices {
+		help += "  +/-: Volume  m: Mute  d/Enter: Set Default  a: Toggle All"
+	} else if m.currentTab == TabConfiguration {
+		help += "  Enter/d: Select Profile"
 	}
 
 	help += "  r: Refresh  q: Quit"

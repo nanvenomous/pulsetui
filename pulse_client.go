@@ -37,6 +37,25 @@ type Stream struct {
 	DeviceIndex int
 }
 
+// Card represents a sound card with multiple profiles
+type Card struct {
+	Index         int
+	Name          string
+	Description   string
+	ActiveProfile string   // Technical name of active profile
+	Profiles      []Profile
+}
+
+// Profile represents a configuration option for a card
+type Profile struct {
+	Name        string // Technical name (e.g., "output:mono-fallback")
+	Description string // Display name (e.g., "Mono Output")
+	Available   bool
+	SinkCount   int // Number of output devices created
+	SourceCount int // Number of input devices created
+	Priority    int
+}
+
 // PeakMonitor monitors the peak audio level for a source
 type PeakMonitor struct {
 	sourceIndex int
@@ -488,5 +507,98 @@ func (pc *PulseClient) MoveSinkInput(inputIndex, sinkIndex int) error {
 // MoveSourceOutput moves a source output to a different source
 func (pc *PulseClient) MoveSourceOutput(outputIndex, sourceIndex int) error {
 	cmd := exec.Command("pactl", "move-source-output", strconv.Itoa(outputIndex), strconv.Itoa(sourceIndex))
+	return cmd.Run()
+}
+
+// parseCardList parses pactl list output for cards
+func parseCardList(output string) []Card {
+	cards := []Card{}
+
+	// Split by card sections
+	pattern := regexp.MustCompile(`(?m)^Card #(\d+)`)
+	matches := pattern.FindAllStringSubmatchIndex(output, -1)
+
+	for i, match := range matches {
+		start := match[0]
+		end := len(output)
+		if i+1 < len(matches) {
+			end = matches[i+1][0]
+		}
+
+		section := output[start:end]
+		card := Card{Index: -1}
+
+		// Parse index
+		if idxMatch := regexp.MustCompile(`Card #(\d+)`).FindStringSubmatch(section); len(idxMatch) > 1 {
+			card.Index, _ = strconv.Atoi(idxMatch[1])
+		}
+
+		// Parse name
+		if nameMatch := regexp.MustCompile(`(?m)^\s*Name: (.+)$`).FindStringSubmatch(section); len(nameMatch) > 1 {
+			card.Name = strings.TrimSpace(nameMatch[1])
+		}
+
+		// Parse description - try device.description property first, fallback to alsa.card_name
+		if descMatch := regexp.MustCompile(`(?m)^\s*device\.description = "(.+)"`).FindStringSubmatch(section); len(descMatch) > 1 {
+			card.Description = strings.TrimSpace(descMatch[1])
+		} else if descMatch := regexp.MustCompile(`(?m)^\s*alsa\.card_name = "(.+)"`).FindStringSubmatch(section); len(descMatch) > 1 {
+			card.Description = strings.TrimSpace(descMatch[1])
+		}
+
+		// Parse active profile
+		if activeMatch := regexp.MustCompile(`(?m)^\s*Active Profile: (.+)$`).FindStringSubmatch(section); len(activeMatch) > 1 {
+			card.ActiveProfile = strings.TrimSpace(activeMatch[1])
+		}
+
+		// Parse profiles section
+		profilesPattern := regexp.MustCompile(`(?s)Profiles:\s*\n(.*?)(?:\n\s*Active Profile:|\n\s*Ports:|\z)`)
+		if profilesMatch := profilesPattern.FindStringSubmatch(section); len(profilesMatch) > 1 {
+			profilesText := profilesMatch[1]
+
+			// Parse individual profile lines
+			// Format: "profile-name: Description (sinks: N, sources: M, priority: P, available: yes/no)"
+			// Profile names can contain colons (e.g., "output:mono-fallback+input:mono-fallback")
+			// So we match everything up to ": " followed by the description
+			profileLinePattern := regexp.MustCompile(`(?m)^\s*(.+?):\s+(.+?)\s+\(sinks:\s*(\d+),\s*sources:\s*(\d+),\s*priority:\s*(\d+),\s*available:\s*(yes|no)\)`)
+			profileMatches := profileLinePattern.FindAllStringSubmatch(profilesText, -1)
+
+			for _, pm := range profileMatches {
+				if len(pm) > 6 {
+					profile := Profile{
+						Name:        strings.TrimSpace(pm[1]),
+						Description: strings.TrimSpace(pm[2]),
+						Available:   pm[6] == "yes",
+					}
+					profile.SinkCount, _ = strconv.Atoi(pm[3])
+					profile.SourceCount, _ = strconv.Atoi(pm[4])
+					profile.Priority, _ = strconv.Atoi(pm[5])
+
+					card.Profiles = append(card.Profiles, profile)
+				}
+			}
+		}
+
+		if card.Index >= 0 && card.Name != "" {
+			cards = append(cards, card)
+		}
+	}
+
+	return cards
+}
+
+// ListCards returns all sound cards with their profiles
+func (pc *PulseClient) ListCards() ([]Card, error) {
+	cmd := exec.Command("pactl", "list", "cards")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list cards: %w", err)
+	}
+
+	return parseCardList(string(output)), nil
+}
+
+// SetCardProfile changes the active profile for a card
+func (pc *PulseClient) SetCardProfile(cardIndex int, profileName string) error {
+	cmd := exec.Command("pactl", "set-card-profile", strconv.Itoa(cardIndex), profileName)
 	return cmd.Run()
 }
