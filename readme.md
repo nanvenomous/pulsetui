@@ -1,5 +1,9 @@
 # PulseTUI
 
+![pulsetui output](./.rsrc/pulsetui_output.png)
+![pulsetui input](./.rsrc/pulsetui_input.png)
+![pulsetui configuration](./.rsrc/pulsetui_configuration.png)
+
 A simple and clean TUI (Terminal User Interface) application for managing PulseAudio, inspired by pavucontrol.
 
 ## Features
