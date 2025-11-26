@@ -42,7 +42,7 @@ type Card struct {
 	Index         int
 	Name          string
 	Description   string
-	ActiveProfile string   // Technical name of active profile
+	ActiveProfile string // Technical name of active profile
 	Profiles      []Profile
 }
 
@@ -296,15 +296,40 @@ func parseDeviceList(output string, deviceType string) []Device {
 			device.Muted = muteMatch[1] == "yes"
 		}
 
-		// Parse port availability
-		// Look for "not available" in the Ports section
-		if strings.Contains(section, "not available") {
-			device.Available = false
+		// Parse port availability, preferring the active port over inactive ones.
+		activePort := ""
+		if activeMatch := regexp.MustCompile(`(?m)^\s*Active Port: (.+)$`).FindStringSubmatch(section); len(activeMatch) > 1 {
+			activePort = strings.TrimSpace(activeMatch[1])
 		}
-		// If we find "available" (not "not available"), it's available
-		if regexp.MustCompile(`availability.*?\bavailable\b`).MatchString(section) &&
-			!strings.Contains(section, "not available") {
-			device.Available = true
+
+		portAvailability := map[string]string{}
+		portPattern := regexp.MustCompile(`(?mi)^\s+(\S+):.*\b(available|availability)\s*[: ]\s*([a-z]+)`)
+		portMatches := portPattern.FindAllStringSubmatch(section, -1)
+		for _, pm := range portMatches {
+			if len(pm) > 3 {
+				portAvailability[strings.TrimSpace(pm[1])] = strings.ToLower(pm[3])
+			}
+		}
+
+		isPortAvailable := func(status string) bool {
+			status = strings.ToLower(status)
+			return status != "no" && status != "not"
+		}
+
+		// Default to available unless we can derive a better answer
+		device.Available = true
+		if activePort != "" {
+			if status, ok := portAvailability[activePort]; ok {
+				device.Available = isPortAvailable(status)
+			}
+		} else if len(portAvailability) > 0 {
+			device.Available = false
+			for _, status := range portAvailability {
+				if isPortAvailable(status) {
+					device.Available = true
+					break
+				}
+			}
 		}
 
 		if device.Index >= 0 && device.Name != "" {
